@@ -2,8 +2,6 @@
 
 Multi-account OAuth login for [omp (Oh My Pi)](https://github.com/can1357/oh-my-pi). Add, authenticate, and switch between multiple accounts per provider. OMP's built-in fallback handles rate-limit retry and model fallback.
 
-Renamed and continued from [`pi-multi-pass`](https://github.com/tuandinh0801/pi-multi-pass).
-
 ## Install
 
 ```bash
@@ -100,10 +98,11 @@ Run `/multi-auth limits` to inspect quota and usage information for supported pr
 | Global | `~/.omp/agent/multi-auth.json` | Subscriptions and presets |
 | Project | `.omp/multi-auth.json` | `allowedSubs` allow-list |
 
-
 ## Environment variable
 
 `MULTI_SUB` identifies the subscription provider name used by the extension when configured by omp.
+
+Originally based on [`pi-multi-pass`](https://github.com/hjanuschka/pi-multi-pass).
 
 ## License
 

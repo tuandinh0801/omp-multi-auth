@@ -1,6 +1,6 @@
 {
   "name": "omp-multi-auth",
-  "version": "1.5.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Multi-account OAuth login for omp (Oh My Pi) -- add and manage multiple accounts per provider from one place.",
   "keywords": [
@@ -26,6 +26,9 @@
     "extensions",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "omp": {
     "extensions": [
       "./extensions/multi-auth.ts"
