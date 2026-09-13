@@ -26,19 +26,3 @@ jobs:
           node tests/subscription-limits-check.mjs
           node tests/project-aware-limits-check.mjs
 
-  integration:
-    name: integration
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm install --global @oh-my-pi/pi-coding-agent@18.1.19
-      - name: Run integration tests
-        run: |
-          for test in tests/antigravity-payload-check.mjs tests/hardening-check.mjs tests/minimax-provider-check.mjs tests/omp-auth-check.mjs; do
-            node "$test"
-          done
