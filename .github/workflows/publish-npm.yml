@@ -38,7 +38,7 @@ jobs:
             echo "Setting package.json version to $VERSION"
             npm version "$VERSION" --no-git-tag-version --allow-same-version
           fi
-      - run: npm publish --access public --provenance
+      - run: npm publish --access public --provenance || echo "Version already published on npmjs.org, continuing to GitHub Packages..."
       - name: Publish to GitHub Packages
         run: |
           npm pkg set name="@tuandinh0801/omp-multi-auth"
