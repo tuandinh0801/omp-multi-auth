@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  packages: write
 
 jobs:
   publish:
@@ -38,3 +39,8 @@ jobs:
             npm version "$VERSION" --no-git-tag-version --allow-same-version
           fi
       - run: npm publish --access public --provenance
+      - name: Publish to GitHub Packages
+        run: |
+          npm pkg set name="@tuandinh0801/omp-multi-auth"
+          npm config set //npm.pkg.github.com/:_authToken="${{ secrets.GITHUB_TOKEN }}"
+          npm publish --registry=https://npm.pkg.github.com
