@@ -98,9 +98,7 @@ Run `/multi-auth limits` to inspect quota and usage information for supported pr
 | Global | `~/.omp/agent/multi-auth.json` | Subscriptions and presets |
 | Project | `.omp/multi-auth.json` | `allowedSubs` allow-list |
 
-## Environment variable
-
-`MULTI_SUB` identifies the subscription provider name used by the extension when configured by omp.
+## Credits
 
 Originally based on [`pi-multi-pass`](https://github.com/hjanuschka/pi-multi-pass).
 
