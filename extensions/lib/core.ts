@@ -1,8 +1,8 @@
 // Cross-module types and zero-dependency helpers.
 import type { ExtensionCommandContext, ExtensionContext, AuthStorage } from "@oh-my-pi/pi-coding-agent";
-import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
-import type { GeneratedProvider } from "@oh-my-pi/pi-catalog/models";
+import { getBundledModels, type GeneratedProvider } from "@oh-my-pi/pi-catalog";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
+import type { GoogleQuotaAccountSnapshot, CodexUsageSnapshot } from "./quota.ts";
 
 export function getModels(providerId: string): Model<Api>[] {
 	return getBundledModels(providerId as GeneratedProvider) as Model<Api>[];
@@ -38,6 +38,8 @@ export interface QuotaCheckResult {
 	summary: string;
 	details: string[];
 	score: number;
+	googleSnapshot?: GoogleQuotaAccountSnapshot;
+	codexSnapshot?: CodexUsageSnapshot;
 }
 
 export interface ProviderQuotaChecker {

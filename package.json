@@ -26,6 +26,9 @@
     "extensions",
     "README.md"
   ],
+  "scripts": {
+    "test": "node tests/run-all.mjs"
+  },
   "publishConfig": {
     "access": "public"
   },

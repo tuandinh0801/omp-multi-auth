@@ -19,10 +19,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Run hermetic tests
-        run: |
-          node tests/project-restriction-check.mjs
-          node tests/subs-switch-check.mjs
-          node tests/subscription-limits-check.mjs
-          node tests/project-aware-limits-check.mjs
+      - name: Run tests
+        run: npm test
 
