@@ -3,7 +3,11 @@ name: Publish npm package
 on:
   release:
     types: [published]
-
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (optional, defaults to tag or package.json)"
+        required: false
 permissions:
   contents: read
   id-token: write
@@ -19,4 +23,14 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      - name: Sync version from release tag or input
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ] && [[ "${GITHUB_REF_NAME}" =~ ^v[0-9] ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if [ -n "$VERSION" ]; then
+            echo "Setting package.json version to $VERSION"
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+          fi
       - run: npm publish --access public --provenance
