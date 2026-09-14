@@ -56,14 +56,17 @@ function parseIsoTimestampSeconds(value) {
   return Math.floor(parsed / 1000);
 }
 
-function updateGoogleQuotaModel(modelsByName, model, remainingPercent, resetAt) {
+function updateGoogleQuotaModel(modelsByName, model, remainingPercent, resetAt, key) {
   const existing = modelsByName.get(model);
   if (!existing) {
-    modelsByName.set(model, { model, remainingPercent, resetAt });
+    modelsByName.set(model, { model, remainingPercent, resetAt, key });
     return;
   }
 
   let next = existing;
+  if (existing.key === undefined && key !== undefined) {
+    next = { ...next, key };
+  }
   if (remainingPercent !== undefined) {
     if (existing.remainingPercent === undefined || remainingPercent < existing.remainingPercent) {
       next = { ...next, remainingPercent };
@@ -104,13 +107,18 @@ function parseGoogleGeminiQuotaSnapshot(data, projectId) {
   const modelsByName = new Map();
 
   for (const bucket of buckets) {
-    const model = getGoogleGeminiModelLabel(typeof bucket?.modelId === "string" ? bucket.modelId : undefined);
+    const rawKey = typeof bucket?.modelId === "string" ? bucket.modelId : undefined;
+    if (rawKey && (rawKey.toLowerCase().includes("placeholder") || rawKey.toLowerCase().startsWith("tab_"))) {
+      continue;
+    }
+    const model = getGoogleGeminiModelLabel(rawKey);
+    if (model.toLowerCase().includes("placeholder")) continue;
     const remainingPercent = normalizeGoogleRemainingPercent(bucket?.remainingFraction);
     const resetAt = typeof bucket?.resetTime === "string"
       ? parseIsoTimestampSeconds(bucket.resetTime)
       : undefined;
     if (remainingPercent === undefined && resetAt === undefined) continue;
-    updateGoogleQuotaModel(modelsByName, model, remainingPercent, resetAt);
+    updateGoogleQuotaModel(modelsByName, model, remainingPercent, resetAt, rawKey);
   }
 
   return buildGoogleQuotaSnapshot(
@@ -122,21 +130,61 @@ function parseGoogleGeminiQuotaSnapshot(data, projectId) {
 
 const GOOGLE_ANTIGRAVITY_HIDDEN_MODELS = new Set(["tab_flash_lite_preview"]);
 
+function isGoogleAntigravityPlaceholder(value) {
+  if (!value) return true;
+  const lower = String(value).toLowerCase();
+  return lower.includes("placeholder") || lower.startsWith("model_");
+}
+
+function isGoogleAntigravityHiddenModel(modelKey, displayName) {
+  const lowerKey = String(modelKey).toLowerCase();
+  if (
+    lowerKey.startsWith("tab_") ||
+    lowerKey.startsWith("chat_") ||
+    lowerKey.includes("placeholder") ||
+    GOOGLE_ANTIGRAVITY_HIDDEN_MODELS.has(lowerKey)
+  ) {
+    return true;
+  }
+  if (displayName) {
+    const lowerName = String(displayName).toLowerCase();
+    if (
+      lowerName.includes("placeholder") ||
+      GOOGLE_ANTIGRAVITY_HIDDEN_MODELS.has(lowerName)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function formatAntigravityModelKey(key) {
+  const base = key.replace(/-tiered$/, "");
+  return base
+    .split("-")
+    .map((part) => (part.length > 0 ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(" ");
+}
+
 function parseGoogleAntigravityQuotaSnapshot(data, endpoint, projectId) {
   const rawModels = data?.models && typeof data.models === "object" ? data.models : {};
   const modelsByName = new Map();
 
   for (const [modelKey, modelValue] of Object.entries(rawModels)) {
     if (modelValue?.isInternal === true) continue;
-    if (GOOGLE_ANTIGRAVITY_HIDDEN_MODELS.has(modelKey.toLowerCase())) continue;
+    if (isGoogleAntigravityHiddenModel(modelKey)) continue;
 
-    const displayName = typeof modelValue?.displayName === "string" && modelValue.displayName.length > 0
+    const rawDisplayName = typeof modelValue?.displayName === "string" && modelValue.displayName.length > 0
       ? modelValue.displayName
-      : typeof modelValue?.model === "string" && modelValue.model.length > 0
+      : typeof modelValue?.model === "string" && modelValue.model.length > 0 && !isGoogleAntigravityPlaceholder(modelValue.model)
         ? modelValue.model
-        : modelKey;
+        : undefined;
 
-    if (GOOGLE_ANTIGRAVITY_HIDDEN_MODELS.has(displayName.toLowerCase())) continue;
+    const displayName = (rawDisplayName && !isGoogleAntigravityPlaceholder(rawDisplayName))
+      ? rawDisplayName
+      : formatAntigravityModelKey(modelKey);
+
+    if (isGoogleAntigravityHiddenModel(modelKey, displayName)) continue;
 
     const quotaInfo = modelValue?.quotaInfo || {};
     const remainingPercent = normalizeGoogleRemainingPercent(quotaInfo.remainingFraction);
@@ -144,7 +192,7 @@ function parseGoogleAntigravityQuotaSnapshot(data, endpoint, projectId) {
       ? parseIsoTimestampSeconds(quotaInfo.resetTime)
       : undefined;
     if (remainingPercent === undefined && resetAt === undefined) continue;
-    updateGoogleQuotaModel(modelsByName, displayName, remainingPercent, resetAt);
+    updateGoogleQuotaModel(modelsByName, displayName, remainingPercent, resetAt, modelKey);
   }
 
   return buildGoogleQuotaSnapshot(endpoint, projectId, modelsByName);
@@ -157,6 +205,129 @@ function classifyGoogleQuotaKind(snapshot) {
   if (bottleneck <= 15) return { kind: "low", score: bottleneck };
   if (bottleneck <= 30) return { kind: "watch", score: bottleneck };
   return { kind: "ready", score: bottleneck };
+}
+
+function normalizeModelToken(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function stripCloneSuffix(name) {
+  return String(name || "").replace(/\s*\(#\d+\)\s*$/, "");
+}
+
+function getGeminiFamily(model) {
+  const idNorm = normalizeModelToken(model.id);
+  const nameNorm = normalizeModelToken(model.name);
+  if (idNorm.includes("pro") || nameNorm.includes("pro")) return "pro";
+  if (idNorm.includes("flash") || nameNorm.includes("flash")) return "flash";
+  return undefined;
+}
+
+function matchGoogleQuotaModels(baseProvider, model, snapshot) {
+  if (baseProvider === "google-gemini-cli") {
+    const family = getGeminiFamily(model);
+    if (!family) return [];
+    return snapshot.models.filter((bucket) => bucket.model.toLowerCase() === family);
+  }
+
+  const mid = normalizeModelToken(model.id);
+  const mname = normalizeModelToken(stripCloneSuffix(model.name));
+
+  return snapshot.models.filter((bucket) => {
+    const bkey = normalizeModelToken(bucket.key ?? "");
+    const blabel = normalizeModelToken(bucket.model);
+
+    if (bkey && mid && bkey === mid) return true;
+    if (blabel && mname && blabel === mname) return true;
+
+    if (bkey && mid && Math.min(bkey.length, mid.length) >= 4) {
+      if (bkey.startsWith(mid) || mid.startsWith(bkey)) return true;
+    }
+    if (blabel && mname && Math.min(blabel.length, mname.length) >= 4) {
+      if (blabel.startsWith(mname) || mname.startsWith(blabel)) return true;
+    }
+
+    return false;
+  });
+}
+
+function pickWorstQuotaModel(models) {
+  if (!models || models.length === 0) return undefined;
+  let worst = models[0];
+  for (let i = 1; i < models.length; i++) {
+    const current = models[i];
+    const currentPercent = current.remainingPercent ?? 101;
+    const worstPercent = worst.remainingPercent ?? 101;
+    if (currentPercent < worstPercent) {
+      worst = current;
+    }
+  }
+  return worst;
+}
+
+function formatResetShort(resetAt) {
+  if (!resetAt) return "--";
+  const diffMs = resetAt * 1000 - Date.now();
+  if (diffMs <= 0) return "now";
+  const totalMinutes = Math.floor(diffMs / 60000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d${hours}h`;
+  if (hours > 0) return `${hours}h${minutes}m`;
+  return `${Math.max(1, minutes)}m`;
+}
+
+function formatRemainingPercent(value) {
+  if (value === undefined) return "--";
+  return `${value}%`;
+}
+
+function formatCurrentModelQuota(result, model) {
+  if (result.kind === "missing-auth" || result.kind === "error") {
+    return undefined;
+  }
+
+  if (result.googleSnapshot) {
+    const matches = matchGoogleQuotaModels(result.account.baseProvider, model, result.googleSnapshot);
+    const worst = pickWorstQuotaModel(matches);
+    if (!worst) return undefined;
+    return `${worst.model} ${formatRemainingPercent(worst.remainingPercent)} ${formatResetShort(worst.resetAt)}`;
+  }
+
+  if (result.codexSnapshot) {
+    const s = result.codexSnapshot;
+    const five = getCodexWindowRemaining(s.fiveHour);
+    const week = getCodexWindowRemaining(s.weekly);
+    let windowLabel;
+    let remaining;
+    let resetAt;
+
+    if (five !== undefined && week !== undefined) {
+      if (five <= week) {
+        windowLabel = "5h";
+        remaining = five;
+        resetAt = s.fiveHour?.resetAt;
+      } else {
+        windowLabel = "7d";
+        remaining = week;
+        resetAt = s.weekly?.resetAt;
+      }
+    } else if (five !== undefined) {
+      windowLabel = "5h";
+      remaining = five;
+      resetAt = s.fiveHour?.resetAt;
+    } else if (week !== undefined) {
+      windowLabel = "7d";
+      remaining = week;
+      resetAt = s.weekly?.resetAt;
+    }
+
+    if (windowLabel === undefined || remaining === undefined) return undefined;
+    return `${windowLabel} ${formatRemainingPercent(remaining)} ${formatResetShort(resetAt)}`;
+  }
+
+  return undefined;
 }
 
 function subDisplayName(entry) {
@@ -266,6 +437,21 @@ function runGoogleAntigravityQuotaParsingChecks() {
         displayName: "tab_flash_lite_preview",
         quotaInfo: { remainingFraction: 0.99 },
       },
+      tab_jump_flash_lite_preview: {
+        model: "MODEL_PLACEHOLDER_M28",
+        quotaInfo: { remainingFraction: 0.99 },
+      },
+      placeholder: {
+        displayName: "MODEL_PLACEHOLDER_M196",
+        quotaInfo: { remainingFraction: 0.99 },
+      },
+      tiered38: {
+        model: "MODEL_PLACEHOLDER_M322",
+        quotaInfo: {
+          remainingFraction: 0.99,
+          resetTime: "2026-03-21T10:00:00Z",
+        },
+      },
       internal: {
         displayName: "Internal",
         isInternal: true,
@@ -282,9 +468,13 @@ function runGoogleAntigravityQuotaParsingChecks() {
   }, "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels", "project-456");
 
   assert.equal(snapshot.projectId, "project-456");
-  assert.equal(snapshot.models.length, 2);
+  // Hidden models (tab_flash_lite_preview, tabJump/MODEL_PLACEHOLDER_M28, placeholder/MODEL_PLACEHOLDER_M196, internal) are filtered.
+  // tiered38 (gemini-3.8-flash-tiered) resolves to "Gemini 3.8 Flash".
+  assert.equal(snapshot.models.length, 3);
   assert.equal(snapshot.models.find((model) => model.model === "G3 Pro")?.remainingPercent, 42);
   assert.equal(snapshot.models.find((model) => model.model === "G3 Flash")?.remainingPercent, 88);
+  assert.equal(snapshot.models.find((model) => model.model === "Tiered38")?.remainingPercent, 99);
+  assert.equal(snapshot.models.some((model) => model.model.includes("PLACEHOLDER")), false);
   assert.ok(snapshot.models.find((model) => model.model === "G3 Flash")?.resetAt > 0);
   assert.equal(snapshot.worstRemainingPercent, 42);
 }
@@ -308,10 +498,144 @@ function runDisplayNameChecks() {
   );
 }
 
+function runModelMatchChecks() {
+  const resetAt = Math.floor(Date.now() / 1000) + 3600;
+  const antigravitySnapshot = parseGoogleAntigravityQuotaSnapshot({
+    models: {
+      "gemini-3.8-flash": {
+        displayName: "Gemini 3.8 Flash",
+        quotaInfo: {
+          remainingFraction: 0.85,
+          resetTime: "2026-03-21T12:00:00Z",
+        },
+      },
+      "gemini-3.6-flash-high": {
+        displayName: "Gemini 3.6 Flash (High)",
+        quotaInfo: {
+          remainingFraction: 0.40,
+          resetTime: "2026-03-21T12:00:00Z",
+        },
+      },
+      "gemini-3.6-flash-medium": {
+        displayName: "Gemini 3.6 Flash (Medium)",
+        quotaInfo: {
+          remainingFraction: 0.65,
+          resetTime: "2026-03-21T12:00:00Z",
+        },
+      },
+    },
+  }, "https://cloudcode-pa.googleapis.com", "proj-1");
+
+  // Retained key assertion
+  const flash38 = antigravitySnapshot.models.find((m) => m.model === "Gemini 3.8 Flash");
+  assert.equal(flash38?.key, "gemini-3.8-flash");
+  const flash36High = antigravitySnapshot.models.find((m) => m.model === "Gemini 3.6 Flash (High)");
+  assert.equal(flash36High?.key, "gemini-3.6-flash-high");
+
+  // Model match: clone name stripped, id matched exactly
+  const matches38 = matchGoogleQuotaModels(
+    "google-antigravity",
+    { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash (#2)" },
+    antigravitySnapshot,
+  );
+  assert.equal(matches38.length, 1);
+  assert.equal(matches38[0].model, "Gemini 3.8 Flash");
+
+  const formatted38 = formatCurrentModelQuota(
+    {
+      account: { baseProvider: "google-antigravity", providerName: "google-antigravity-2", displayName: "Antigravity #2" },
+      kind: "ready",
+      googleSnapshot: antigravitySnapshot,
+    },
+    { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash (#2)", provider: "google-antigravity-2" },
+  );
+  assert.ok(formatted38?.includes("Gemini 3.8 Flash"));
+  assert.ok(formatted38?.includes("85%"));
+
+  // Tier variants: prefix match matches High and Medium buckets; pickWorst picks lowest (40%)
+  const matches36 = matchGoogleQuotaModels(
+    "google-antigravity",
+    { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash" },
+    antigravitySnapshot,
+  );
+  assert.equal(matches36.length, 2);
+  const worst36 = pickWorstQuotaModel(matches36);
+  assert.equal(worst36?.model, "Gemini 3.6 Flash (High)");
+  assert.equal(worst36?.remainingPercent, 40);
+
+  // Gemini-CLI family match
+  const geminiCliSnapshot = parseGoogleGeminiQuotaSnapshot({
+    buckets: [
+      { modelId: "Gemini 2.5 Pro", remainingFraction: 0.9 },
+      { modelId: "Gemini 2.5 Flash", remainingFraction: 0.5 },
+    ],
+  }, "proj-2");
+
+  const matchesCliFlash = matchGoogleQuotaModels(
+    "google-gemini-cli",
+    { id: "gemini-3.8-flash-preview", name: "Gemini 3.8 Flash Preview" },
+    geminiCliSnapshot,
+  );
+  assert.equal(matchesCliFlash.length, 1);
+  assert.equal(matchesCliFlash[0].model, "Flash");
+
+  const matchesCliPro = matchGoogleQuotaModels(
+    "google-gemini-cli",
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+    geminiCliSnapshot,
+  );
+  assert.equal(matchesCliPro.length, 1);
+  assert.equal(matchesCliPro[0].model, "Pro");
+
+  // Unmatched model returns [] and formatCurrentModelQuota returns undefined
+  const unmatched = matchGoogleQuotaModels(
+    "google-antigravity",
+    { id: "claude-3-5-sonnet", name: "Claude 3.5 Sonnet" },
+    antigravitySnapshot,
+  );
+  assert.deepEqual(unmatched, []);
+
+  const formattedUnmatched = formatCurrentModelQuota(
+    {
+      account: { baseProvider: "google-antigravity", providerName: "google-antigravity", displayName: "Antigravity" },
+      kind: "ready",
+      googleSnapshot: antigravitySnapshot,
+    },
+    { id: "claude-3-5-sonnet", name: "Claude 3.5 Sonnet", provider: "google-antigravity" },
+  );
+  assert.equal(formattedUnmatched, undefined);
+
+  // Error/missing-auth returns undefined
+  assert.equal(
+    formatCurrentModelQuota(
+      { account: { baseProvider: "google-antigravity" }, kind: "missing-auth", googleSnapshot: antigravitySnapshot },
+      { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", provider: "google-antigravity" },
+    ),
+    undefined,
+  );
+
+  // Codex status formatting
+  const codexFormatted = formatCurrentModelQuota(
+    {
+      account: { baseProvider: "openai-codex", providerName: "openai-codex", displayName: "Codex" },
+      kind: "ready",
+      codexSnapshot: {
+        planType: "pro",
+        email: "a@b.com",
+        fiveHour: { usedPercent: 20, windowSeconds: 18000, resetAt },
+        weekly: { usedPercent: 40, windowSeconds: 604800, resetAt: resetAt + 10000 },
+      },
+    },
+    { id: "gpt-4o", name: "GPT-4o", provider: "openai-codex" },
+  );
+  assert.ok(codexFormatted?.startsWith("7d 60%"));
+}
+
 runWindowClassificationChecks();
 runSeverityChecks();
 runGoogleGeminiQuotaParsingChecks();
 runGoogleAntigravityQuotaParsingChecks();
 runGoogleClassificationChecks();
 runDisplayNameChecks();
+runModelMatchChecks();
 console.log("subscription limit checks passed");

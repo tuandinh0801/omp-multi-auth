@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@o
 import { loadGlobalConfig, parseEnvConfig, mergeConfigs, normalizeEntries, loadEffectiveConfig, formatAllowedProviderSummary, getProjectScopedProviderNames, findSelectableModelForProvider, getProviderDisplayName } from "./lib/config.ts";
 import { registerSub, rewriteAntigravitySystemInstruction } from "./lib/providers.ts";
 import { handleSubsMenu, handleSubsList, handleSubsAdd, handleSubsRemove, handleSubsLogin, handleSubsLogout, handleSubsSwitch, handleSubsStatus } from "./lib/commands-subs.ts";
-import { handleSubsLimits } from "./lib/quota.ts";
+import { handleSubsLimits, refreshQuotaStatusLine, invalidateStatusQuota } from "./lib/quota.ts";
 import { handlePresetActivate, handlePresetCreate, handlePresetList, handlePresetToggle, handlePresetRemove, handlePresetMenu } from "./lib/commands-preset.ts";
 
 // ========================================================================
@@ -77,6 +77,11 @@ export default function multiSub(pi: ExtensionAPI) {
 			ctx.ui.setStatus("multi-auth", `allowed ${allowedSummary}`);
 		}
 
+		refreshQuotaStatusLine(ctx);
+		if ("setInterval" in ctx && typeof ctx.setInterval === "function") {
+			ctx.setInterval(() => refreshQuotaStatusLine(ctx), 60_000);
+		}
+
 		await enforceProjectRestriction(ctx, "session");
 	});
 
@@ -89,9 +94,18 @@ export default function multiSub(pi: ExtensionAPI) {
 			return { action: "continue" as const };
 		}
 		const ok = await enforceProjectRestriction(ctx, "input");
+		if (ok) {
+			refreshQuotaStatusLine(ctx);
+		}
 		return ok ? { action: "continue" as const } : { action: "handled" as const };
 	});
 
+	pi.on("agent_end", (_event, ctx) => {
+		if (ctx.model) {
+			invalidateStatusQuota(ctx.model.provider);
+		}
+		refreshQuotaStatusLine(ctx);
+	});
 	// Register /multi-auth command
 	pi.registerCommand("multi-auth", {
 		description: "Manage multi-account OAuth subscriptions and accounts",

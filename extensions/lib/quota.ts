@@ -5,7 +5,7 @@ import type { ExtensionCommandContext, ExtensionContext, AuthStorage } from "@oh
 import { BorderedLoader } from "@oh-my-pi/pi-coding-agent";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { getBaseProvider, subDisplayName, PROVIDER_TEMPLATES } from "./providers.ts";
-import { getAuthStorage, subProviderName, type AuthStorageEntry, type MultiAuthConfig, type QuotaAccount, type QuotaCheckResult, type QuotaStatusKind, type ProviderQuotaChecker } from "./core.ts";
+import { getAuthStorage, getModels, subProviderName, type AuthStorageEntry, type MultiAuthConfig, type QuotaAccount, type QuotaCheckResult, type QuotaStatusKind, type ProviderQuotaChecker } from "./core.ts";
 import { loadGlobalConfig, loadProjectConfig, parseEnvConfig, mergeConfigs, normalizeEntries } from "./config.ts";
 import { getWrappedSelectIndex, showWrappedSelect } from "./ui.ts";
 import type { SelectItem } from "@oh-my-pi/pi-tui";
@@ -73,6 +73,7 @@ export interface GoogleQuotaModelSnapshot {
 	model: string;
 	remainingPercent?: number;
 	resetAt?: number;
+	key?: string;
 }
 
 export interface GoogleQuotaAccountSnapshot {
@@ -338,6 +339,7 @@ export function formatQuotaOverview(results: QuotaCheckResult[]): string {
 export function formatQuotaCurrentHint(
 	results: QuotaCheckResult[],
 	currentProviderName: string | undefined,
+	currentModel?: { id: string; name: string },
 ): string | undefined {
 	if (!currentProviderName) return undefined;
 
@@ -345,6 +347,13 @@ export function formatQuotaCurrentHint(
 	if (!current) return undefined;
 
 	let hint = `Current: ${current.account.displayName} is ${formatQuotaKind(current.kind)}`;
+	if (current.googleSnapshot && currentModel) {
+		const matches = matchGoogleQuotaModels(current.account.baseProvider, currentModel, current.googleSnapshot);
+		const worst = pickWorstQuotaModel(matches);
+		if (worst) {
+			hint += ` • ${worst.model} ${formatRemainingPercent(worst.remainingPercent)} left`;
+		}
+	}
 	const best = results[0];
 	if (best && best.account.providerName !== current.account.providerName) {
 		hint += ` • best available: ${best.account.displayName}`;
@@ -435,7 +444,7 @@ export async function selectQuotaResult(
 		subtitle: [
 			"Select an account to inspect its full quota windows.",
 			formatQuotaOverview(results),
-			formatQuotaCurrentHint(results, currentProviderName),
+			formatQuotaCurrentHint(results, currentProviderName, ctx.model),
 		].filter(Boolean).join("\n"),
 		items: buildQuotaSelectItems(results, currentProviderName),
 		initialValue: currentProviderName,
@@ -470,14 +479,18 @@ export function updateGoogleQuotaModel(
 	model: string,
 	remainingPercent: number | undefined,
 	resetAt: number | undefined,
+	key?: string,
 ): void {
 	const existing = modelsByName.get(model);
 	if (!existing) {
-		modelsByName.set(model, { model, remainingPercent, resetAt });
+		modelsByName.set(model, { model, remainingPercent, resetAt, key });
 		return;
 	}
 
 	let next = existing;
+	if (existing.key === undefined && key !== undefined) {
+		next = { ...next, key };
+	}
 	if (remainingPercent !== undefined) {
 		if (existing.remainingPercent === undefined || remainingPercent < existing.remainingPercent) {
 			next = { ...next, remainingPercent };
@@ -532,18 +545,67 @@ export function parseGoogleGeminiQuotaSnapshot(
 
 	for (const bucketValue of buckets) {
 		const bucket = getRecord(bucketValue);
-		const model = getGoogleGeminiModelLabel(
-			typeof bucket?.modelId === "string" ? bucket.modelId : undefined,
-		);
+		const rawKey = typeof bucket?.modelId === "string" ? bucket.modelId : undefined;
+		if (rawKey && (rawKey.toLowerCase().includes("placeholder") || rawKey.toLowerCase().startsWith("tab_"))) {
+			continue;
+		}
+		const model = getGoogleGeminiModelLabel(rawKey);
+		if (model.toLowerCase().includes("placeholder")) continue;
 		const remainingPercent = normalizeGoogleRemainingPercent(bucket?.remainingFraction);
 		const resetAt = typeof bucket?.resetTime === "string"
 			? parseIsoTimestampSeconds(bucket.resetTime)
 			: undefined;
 		if (remainingPercent === undefined && resetAt === undefined) continue;
-		updateGoogleQuotaModel(modelsByName, model, remainingPercent, resetAt);
+		updateGoogleQuotaModel(modelsByName, model, remainingPercent, resetAt, rawKey);
 	}
 
 	return buildGoogleQuotaSnapshot(GOOGLE_GEMINI_QUOTA_ENDPOINT, projectId, modelsByName);
+}
+
+export function isGoogleAntigravityPlaceholder(value: string | undefined): boolean {
+	if (!value) return true;
+	const lower = value.toLowerCase();
+	return lower.includes("placeholder") || lower.startsWith("model_");
+}
+
+export function isGoogleAntigravityHiddenModel(modelKey: string, displayName?: string): boolean {
+	const lowerKey = modelKey.toLowerCase();
+	if (
+		lowerKey.startsWith("tab_") ||
+		lowerKey.startsWith("chat_") ||
+		lowerKey.includes("placeholder") ||
+		GOOGLE_ANTIGRAVITY_HIDDEN_MODELS.has(lowerKey)
+	) {
+		return true;
+	}
+	if (displayName) {
+		const lowerName = displayName.toLowerCase();
+		if (
+			lowerName.includes("placeholder") ||
+			GOOGLE_ANTIGRAVITY_HIDDEN_MODELS.has(lowerName)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+export function formatAntigravityModelKey(key: string): string {
+	const base = key.replace(/-tiered$/, "");
+	try {
+		const bundled = getModels("google-antigravity");
+		const exact = bundled.find((m) => m.id === key);
+		if (exact) return exact.name;
+		const baseMatch = bundled.find((m) => m.id === base);
+		if (baseMatch) return baseMatch.name;
+	} catch {
+		// Fall back to title-casing below
+	}
+
+	return base
+		.split("-")
+		.map((part) => (part.length > 0 ? part[0].toUpperCase() + part.slice(1) : part))
+		.join(" ");
 }
 
 export function parseGoogleAntigravityQuotaSnapshot(
@@ -559,24 +621,93 @@ export function parseGoogleAntigravityQuotaSnapshot(
 		for (const [modelKey, modelValue] of Object.entries(rawModels)) {
 			const model = getRecord(modelValue);
 			if (model?.isInternal === true) continue;
-			if (GOOGLE_ANTIGRAVITY_HIDDEN_MODELS.has(modelKey.toLowerCase())) continue;
-			const displayName = typeof model?.displayName === "string" && model.displayName.length > 0
+			if (isGoogleAntigravityHiddenModel(modelKey)) continue;
+
+			const rawDisplayName = typeof model?.displayName === "string" && model.displayName.length > 0
 				? model.displayName
-				: typeof model?.model === "string" && model.model.length > 0
+				: typeof model?.model === "string" && model.model.length > 0 && !isGoogleAntigravityPlaceholder(model.model)
 					? model.model
-					: modelKey;
-			if (GOOGLE_ANTIGRAVITY_HIDDEN_MODELS.has(displayName.toLowerCase())) continue;
+					: undefined;
+
+			const displayName = (rawDisplayName && !isGoogleAntigravityPlaceholder(rawDisplayName))
+				? rawDisplayName
+				: formatAntigravityModelKey(modelKey);
+
+			if (isGoogleAntigravityHiddenModel(modelKey, displayName)) continue;
+
 			const quotaInfo = getRecord(model?.quotaInfo);
 			const remainingPercent = normalizeGoogleRemainingPercent(quotaInfo?.remainingFraction);
 			const resetAt = typeof quotaInfo?.resetTime === "string"
 				? parseIsoTimestampSeconds(quotaInfo.resetTime)
 				: undefined;
 			if (remainingPercent === undefined && resetAt === undefined) continue;
-			updateGoogleQuotaModel(modelsByName, displayName, remainingPercent, resetAt);
+			updateGoogleQuotaModel(modelsByName, displayName, remainingPercent, resetAt, modelKey);
 		}
 	}
 
 	return buildGoogleQuotaSnapshot(endpoint, projectId, modelsByName);
+}
+
+export function normalizeModelToken(value: string): string {
+	return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+export function stripCloneSuffix(name: string): string {
+	return name.replace(/\s*\(#\d+\)\s*$/, "");
+}
+
+export function getGeminiFamily(model: { id: string; name: string }): "pro" | "flash" | undefined {
+	const idNorm = normalizeModelToken(model.id);
+	const nameNorm = normalizeModelToken(model.name);
+	if (idNorm.includes("pro") || nameNorm.includes("pro")) return "pro";
+	if (idNorm.includes("flash") || nameNorm.includes("flash")) return "flash";
+	return undefined;
+}
+
+export function matchGoogleQuotaModels(
+	baseProvider: string,
+	model: { id: string; name: string },
+	snapshot: GoogleQuotaAccountSnapshot,
+): GoogleQuotaModelSnapshot[] {
+	if (baseProvider === "google-gemini-cli") {
+		const family = getGeminiFamily(model);
+		if (!family) return [];
+		return snapshot.models.filter((bucket) => bucket.model.toLowerCase() === family);
+	}
+
+	const mid = normalizeModelToken(model.id);
+	const mname = normalizeModelToken(stripCloneSuffix(model.name));
+
+	return snapshot.models.filter((bucket) => {
+		const bkey = normalizeModelToken(bucket.key ?? "");
+		const blabel = normalizeModelToken(bucket.model);
+
+		if (bkey && mid && bkey === mid) return true;
+		if (blabel && mname && blabel === mname) return true;
+
+		if (bkey && mid && Math.min(bkey.length, mid.length) >= 4) {
+			if (bkey.startsWith(mid) || mid.startsWith(bkey)) return true;
+		}
+		if (blabel && mname && Math.min(blabel.length, mname.length) >= 4) {
+			if (blabel.startsWith(mname) || mname.startsWith(blabel)) return true;
+		}
+
+		return false;
+	});
+}
+
+export function pickWorstQuotaModel(models: GoogleQuotaModelSnapshot[]): GoogleQuotaModelSnapshot | undefined {
+	if (models.length === 0) return undefined;
+	let worst = models[0];
+	for (let i = 1; i < models.length; i++) {
+		const current = models[i];
+		const currentPercent = current.remainingPercent ?? 101;
+		const worstPercent = worst.remainingPercent ?? 101;
+		if (currentPercent < worstPercent) {
+			worst = current;
+		}
+	}
+	return worst;
 }
 
 export function classifyGoogleQuotaKind(snapshot: GoogleQuotaAccountSnapshot): {
@@ -713,6 +844,7 @@ export function formatGoogleQuotaDetails(
 	account: QuotaAccount,
 	snapshot: GoogleQuotaAccountSnapshot,
 	kind: QuotaStatusKind,
+	currentModel?: { id: string; name: string },
 ): string[] {
 	const details = [
 		`account: ${account.displayName}`,
@@ -725,13 +857,29 @@ export function formatGoogleQuotaDetails(
 	if (snapshot.worstRemainingPercent !== undefined) {
 		details.push(`bottleneck: ${formatRemainingPercent(snapshot.worstRemainingPercent)} left`);
 	}
+
+	let currentModelLabels = new Set<string>();
+	if (currentModel) {
+		const matches = matchGoogleQuotaModels(account.baseProvider, currentModel, snapshot);
+		const worst = pickWorstQuotaModel(matches);
+		if (worst) {
+			details.push(
+				`current model (${worst.model}): ${formatRemainingPercent(worst.remainingPercent)} left, resets ${formatResetLong(worst.resetAt)}`,
+			);
+			currentModelLabels = new Set(matches.map((m) => m.model));
+		} else {
+			details.push(`current model (${currentModel.name}): not tracked by this provider`);
+		}
+	}
+
 	for (const model of [...snapshot.models].sort((left, right) => {
 		const leftPercent = left.remainingPercent ?? 101;
 		const rightPercent = right.remainingPercent ?? 101;
 		return leftPercent - rightPercent || left.model.localeCompare(right.model);
 	})) {
+		const suffix = currentModelLabels.has(model.model) ? "  ← current" : "";
 		details.push(
-			`${model.model}: ${formatRemainingPercent(model.remainingPercent)} left, resets ${formatResetLong(model.resetAt)}`,
+			`${model.model}: ${formatRemainingPercent(model.remainingPercent)} left, resets ${formatResetLong(model.resetAt)}${suffix}`,
 		);
 	}
 	details.push(`endpoint: ${snapshot.endpoint}`);
@@ -811,6 +959,7 @@ export async function checkGoogleQuotaAccount(
 			summary: `${getGoogleQuotaBucketLabel(account, snapshot.models.length)} | bottleneck ${formatRemainingPercent(snapshot.worstRemainingPercent)} | ${formatQuotaKind(classification.kind)}`,
 			details: formatGoogleQuotaDetails(account, snapshot, classification.kind),
 			score: classification.score,
+			googleSnapshot: snapshot,
 		};
 	} catch (error: unknown) {
 		if (signal?.aborted || isAbortError(error)) throw error;
@@ -957,6 +1106,7 @@ export const codexQuotaChecker: ProviderQuotaChecker = {
 				summary,
 				details,
 				score: classification.score,
+				codexSnapshot: snapshot,
 			};
 		} catch (error: unknown) {
 			if (signal?.aborted || isAbortError(error)) throw error;
@@ -1001,10 +1151,14 @@ export async function showQuotaDetails(
 	ctx: ExtensionCommandContext,
 	result: QuotaCheckResult,
 ): Promise<void> {
+	const details = (result.googleSnapshot && result.account.providerName === ctx.model?.provider && ctx.model)
+		? formatGoogleQuotaDetails(result.account, result.googleSnapshot, result.kind, ctx.model)
+		: result.details;
+
 	await showWrappedSelect(ctx, {
 		title: `Limit Details: ${result.account.displayName}`,
 		subtitle: "Press Enter or Escape to go back to the limits list.",
-		items: result.details.map((detail, index) => ({ value: `${index}:${detail}`, label: detail })),
+		items: details.map((detail, index) => ({ value: `${index}:${detail}`, label: detail })),
 		confirmHint: "back",
 		cancelHint: "back",
 	});
@@ -1041,6 +1195,126 @@ export async function handleSubsLimits(ctx: ExtensionCommandContext): Promise<vo
 		if (!selected) return;
 		preferredProviderName = selected.account.providerName;
 		await showQuotaDetails(ctx, selected);
+	}
+}
+
+export const QUOTA_STATUS_KEY = "multi-auth-quota";
+
+export function formatCurrentModelQuota(
+	result: QuotaCheckResult,
+	model: { id: string; name: string; provider: string },
+): string | undefined {
+	if (result.kind === "missing-auth" || result.kind === "error") {
+		return undefined;
+	}
+
+	if (result.googleSnapshot) {
+		const matches = matchGoogleQuotaModels(result.account.baseProvider, model, result.googleSnapshot);
+		const worst = pickWorstQuotaModel(matches);
+		if (!worst) return undefined;
+		return `${worst.model} ${formatRemainingPercent(worst.remainingPercent)} ${formatResetShort(worst.resetAt)}`;
+	}
+
+	if (result.codexSnapshot) {
+		const s = result.codexSnapshot;
+		const five = getCodexWindowRemaining(s.fiveHour);
+		const week = getCodexWindowRemaining(s.weekly);
+		let windowLabel: string | undefined;
+		let remaining: number | undefined;
+		let resetAt: number | undefined;
+
+		if (five !== undefined && week !== undefined) {
+			if (five <= week) {
+				windowLabel = "5h";
+				remaining = five;
+				resetAt = s.fiveHour?.resetAt;
+			} else {
+				windowLabel = "7d";
+				remaining = week;
+				resetAt = s.weekly?.resetAt;
+			}
+		} else if (five !== undefined) {
+			windowLabel = "5h";
+			remaining = five;
+			resetAt = s.fiveHour?.resetAt;
+		} else if (week !== undefined) {
+			windowLabel = "7d";
+			remaining = week;
+			resetAt = s.weekly?.resetAt;
+		}
+
+		if (windowLabel === undefined || remaining === undefined) return undefined;
+		return `${windowLabel} ${formatRemainingPercent(remaining)} ${formatResetShort(resetAt)}`;
+	}
+
+	return undefined;
+}
+
+const statusQuotaCache = new Map<string, { at: number; result: QuotaCheckResult }>();
+const statusQuotaInFlight = new Map<string, Promise<QuotaCheckResult | undefined>>();
+export const STATUS_QUOTA_TTL_MS = 60_000;
+
+export async function fetchStatusQuotaResult(
+	ctx: ExtensionContext,
+	providerName: string,
+	baseProvider: string,
+): Promise<QuotaCheckResult | undefined> {
+	const inFlight = statusQuotaInFlight.get(providerName);
+	if (inFlight) return inFlight;
+
+	const fetchPromise = (async () => {
+		try {
+			const authStorage = getAuthStorage(ctx);
+			const account: QuotaAccount = {
+				providerName,
+				baseProvider,
+				displayName: providerName,
+				auth: authStorage.get(providerName) as AuthStorageEntry | undefined,
+			};
+			const checker = PROVIDER_QUOTA_CHECKERS.find((c) => c.baseProvider === baseProvider);
+			if (!checker) return undefined;
+			const result = await checker.check(account, authStorage);
+			statusQuotaCache.set(providerName, { at: Date.now(), result });
+			return result;
+		} catch {
+			return undefined;
+ 		} finally {
+			statusQuotaInFlight.delete(providerName);
+		}
+	})();
+
+	statusQuotaInFlight.set(providerName, fetchPromise);
+	return fetchPromise;
+}
+
+export function invalidateStatusQuota(providerName: string): void {
+	statusQuotaCache.delete(providerName);
+}
+
+export function refreshQuotaStatusLine(ctx: ExtensionContext): void {
+	if (!ctx.hasUI) return;
+	const model = ctx.model;
+	if (!model) {
+		ctx.ui.setStatus(QUOTA_STATUS_KEY, undefined);
+		return;
+	}
+	const base = getBaseProvider(model.provider);
+	if (!base || !PROVIDER_QUOTA_CHECKERS.some((c) => c.baseProvider === base)) {
+		ctx.ui.setStatus(QUOTA_STATUS_KEY, undefined);
+		return;
+	}
+
+	const cached = statusQuotaCache.get(model.provider);
+	if (cached) {
+		ctx.ui.setStatus(QUOTA_STATUS_KEY, formatCurrentModelQuota(cached.result, model) ?? undefined);
+	}
+	if (!cached || Date.now() - cached.at > STATUS_QUOTA_TTL_MS) {
+		fetchStatusQuotaResult(ctx, model.provider, base).then((result) => {
+			if (!result) return;
+			if (ctx.model?.provider === model.provider && ctx.model) {
+				ctx.ui.setStatus(QUOTA_STATUS_KEY, formatCurrentModelQuota(result, ctx.model) ?? undefined);
+			}
+		});
 	}
 }
 
