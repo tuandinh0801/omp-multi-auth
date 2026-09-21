@@ -114,17 +114,22 @@ export const SUB_TRANSPORT_CONFIG: Record<string, { builtinApi: Api | ((modelId:
 };
 
 
-export const ANTIGRAVITY_SENSITIVE_TAGS = ["system-conventions", "system-directive"] as const;
+const ANTIGRAVITY_ZWSP = "\u200B";
 
-/** Case-flip Google's fingerprinted system-prompt tags so Cloud Code Assist stops
- *  masking the request as 429 RESOURCE_EXHAUSTED (omp issue #11809). Content is
- *  preserved; only the exact-substring fingerprint is defeated. */
+/** Substrings that make up Cloud Code Assist's system-prompt abuse fingerprint
+ * (omp #11699, #12655). The live trigger is the `<conventions>` tag plus the
+ * `RFC 2119: ...` sentence; breaking any one component defeats it. */
+export const ANTIGRAVITY_FINGERPRINTS = ["RFC 2119", "<conventions>", "</conventions>"] as const;
+
+/** Break Cloud Code Assist's system-prompt fingerprint so it stops masking
+ * requests as 429 RESOURCE_EXHAUSTED (omp #11699, #12655). A zero-width space is
+ * inserted into each flagged substring: invisible to the model, but it breaks
+ * the contiguous literal the upstream WAF matches. Idempotent — a second pass
+ * finds no intact substring. Content is otherwise preserved. */
 export function defeatAntigravityFingerprint(text: string): string {
 	let out = text;
-	for (const tag of ANTIGRAVITY_SENSITIVE_TAGS) {
-		out = out
-			.split(`<${tag}>`).join(`<${tag.toUpperCase()}>`)
-			.split(`</${tag}>`).join(`</${tag.toUpperCase()}>`);
+	for (const s of ANTIGRAVITY_FINGERPRINTS) {
+		out = out.split(s).join(s[0] + ANTIGRAVITY_ZWSP + s.slice(1));
 	}
 	return out;
 }

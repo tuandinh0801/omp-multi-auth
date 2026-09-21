@@ -20,7 +20,7 @@ export default function multiSub(pi: ExtensionAPI) {
 		registerSub(pi, entry);
 	}
 
-	// Apply same tag-only fingerprint workaround at OMP payload seam.
+	// Break Cloud Code Assist's system-prompt fingerprint at the OMP payload seam (base provider).
 	pi.on("before_provider_request", (event, ctx) => {
 		if (ctx.model?.provider === "google-antigravity") {
 			return rewriteAntigravitySystemInstruction(event.payload);

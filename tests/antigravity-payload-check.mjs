@@ -64,10 +64,13 @@ function assertRewritten(capture, provider) {
 	assert.equal(capture.provider, provider);
 	const parts = capture.payload?.request?.systemInstruction?.parts ?? [];
 	const text = parts.map((part) => part?.text ?? "").join("\n");
-	assert.match(text, /<SYSTEM-CONVENTIONS>/);
-	assert.match(text, /<SYSTEM-DIRECTIVE>/);
-	assert.doesNotMatch(text, /<system-conventions>/);
-	assert.doesNotMatch(text, /<system-directive>/);
+	const ZWSP = "\u200B";
+	assert.ok(text.includes(ZWSP), "zero-width space inserted into fingerprint");
+	assert.doesNotMatch(text, /RFC 2119/, "contiguous RFC 2119 fingerprint broken");
+	assert.doesNotMatch(text, /<conventions>/, "contiguous <conventions> tag broken");
+	const stripped = text.split(ZWSP).join("");
+	assert.match(stripped, /<conventions>\s*RFC 2119: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL\./,
+		"content preserved once zero-width spaces are stripped");
 	assert.equal(capture.wire.body.requestType, "agent");
 	assert.match(capture.wire.url, /\/v1internal:streamGenerateContent\?alt=sse$/);
 	assert.match(String(capture.wire.headers?.["User-Agent"] ?? capture.wire.headers?.["user-agent"]), /^antigravity\//);
