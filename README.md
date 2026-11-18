@@ -8,10 +8,10 @@ Multi-account OAuth login for [omp (Oh My Pi)](https://github.com/can1357/oh-my-
 omp install npm:omp-multi-auth
 ```
 
-To install the fork with per-account Codex model discovery, first remove the npm package if it is installed (`omp plugin uninstall omp-multi-auth`), then run:
+Or install from GitHub:
 
 ```bash
-omp install git:github.com/gsgtzq/omp-multi-auth
+omp install git:github.com/tuandinh0801/omp-multi-auth
 ```
 
 ## Features
