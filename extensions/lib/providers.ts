@@ -5,7 +5,10 @@ import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@oh-my-p
 import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth";
 import { AssistantMessageEventStream, streamSimple, type Api, type AssistantMessageEvent, type Context, type Model, type SimpleStreamOptions } from "@oh-my-pi/pi-ai";
-import { getModels, subProviderName, type SubEntry } from "./core.ts";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { fetchCodexModels } from "@oh-my-pi/pi-catalog/discovery/codex";
+import { CODEX_BASE_URL, getCodexAccountId } from "@oh-my-pi/pi-catalog/wire/codex";
+import { adaptAuthStorage, getModels, subProviderName, type SubEntry } from "./core.ts";
 
 export type CopilotCredentials = OAuthCredentials & { enterpriseUrl?: string };
 export type GeminiCredentials = OAuthCredentials & { projectId?: string };
@@ -443,11 +446,49 @@ export function cloneModels(originalProvider: string, index: number): ProviderMo
 // Register a single subscription as a provider
 // ==========================================================================
 
+function registerCodexSub(pi: ExtensionAPI, name: string, index: number, oauth: ProviderOAuth): void {
+	pi.registerProvider(name, {
+		baseUrl: CODEX_BASE_URL,
+		api: "openai-codex-responses",
+		oauth,
+		async fetchDynamicModels(accessToken) {
+			// OMP peeks at this provider's credential without refreshing it.
+			if (!accessToken) {
+				const auth = await pi.pi.discoverAuthStorage();
+				try {
+					const storage = adaptAuthStorage(auth);
+					accessToken = (await storage.getOAuthAccess?.(name))?.accessToken;
+					if (!accessToken && storage.hasAuth(name)) throw new Error("Codex OAuth access unavailable");
+				} finally {
+					auth.close();
+				}
+			}
+			if (!accessToken) return [];
+
+			const result = await fetchCodexModels({ accessToken, accountId: getCodexAccountId(accessToken) });
+			// Throw on failure so OMP keeps this account's last good catalog.
+			if (!result) throw new Error("Codex model list unavailable");
+			if (result.rejectedStatus) throw new Error(`Codex model list rejected (HTTP ${result.rejectedStatus})`);
+
+			// Resolve native Codex capability and pricing rules before OMP assigns the
+			// synthetic provider name. Do not add bundled IDs the account didn't list.
+			return result.models.map(spec => {
+				const model = buildModel(spec);
+				return { ...model, name: `${model.name} (#${index})`, input: model.input as ("text" | "image")[] };
+			});
+		},
+	});
+}
+
 export function registerSub(pi: ExtensionAPI, entry: SubEntry): void {
 	const template = PROVIDER_TEMPLATES[entry.provider];
 	if (!template) return;
 	const name = subProviderName(entry);
 	const oauth = template.buildOAuth?.(entry.index);
+	if (entry.provider === "openai-codex" && oauth) {
+		registerCodexSub(pi, name, entry.index, oauth);
+		return;
+	}
 	const modifyModels = template.buildModifyModels?.(name);
 
 	const builtinModels = getModels(entry.provider);

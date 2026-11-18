@@ -8,10 +8,10 @@ Multi-account OAuth login for [omp (Oh My Pi)](https://github.com/can1357/oh-my-
 omp install npm:omp-multi-auth
 ```
 
-Or install from GitHub:
+To install the fork with per-account Codex model discovery, first remove the npm package if it is installed (`omp plugin uninstall omp-multi-auth`), then run:
 
 ```bash
-omp install git:github.com/tuandinh0801/omp-multi-auth
+omp install git:github.com/gsgtzq/omp-multi-auth
 ```
 
 ## Features
@@ -78,6 +78,9 @@ Create `.omp/multi-auth.json` in a project to restrict which subscription provid
 | `kimi-code` | Kimi Code |
 | `xai-oauth` | xAI Grok OAuth |
 | `cursor` | Cursor (browser PKCE OAuth or API key) |
+
+Each added Codex account (e.g. `openai-codex-2`) discovers its own model catalog using its own OAuth credentials. Run `omp models refresh` to check for newly available models. Account-specific selectors stay unchanged.
+
 ### API key
 
 | Provider | Service |
