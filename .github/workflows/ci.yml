@@ -25,7 +25,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Install omp
         run: |
-          bun install -g @oh-my-pi/pi-coding-agent@19.0.1
+          bun install -g @oh-my-pi/pi-coding-agent@latest
           echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
       - name: Run OpenCode Go host tests
         run: |
