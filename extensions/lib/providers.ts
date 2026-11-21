@@ -7,7 +7,7 @@ import { join } from "path";
 import { getAgentDir, type ExtensionAPI, type ProviderConfig, type ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth";
-import { AssistantMessageEventStream, streamSimple, type Api, type AssistantMessageEvent, type Context, type Model, type SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+import { AssistantMessageEventStream, streamSimple, type Api, type AssistantMessageEvent, type Context, type Model, type SimpleStreamOptions, type UsageProvider, type UsageReport } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { fetchCodexModels } from "@oh-my-pi/pi-catalog/discovery/codex";
 import { CODEX_BASE_URL, getCodexAccountId } from "@oh-my-pi/pi-catalog/wire/codex";
@@ -470,11 +470,39 @@ export function cloneModels(originalProvider: string, index: number): ProviderMo
 // Register a single subscription as a provider
 // ==========================================================================
 
+// pi-ai added the usage registry after 18.1.20, the lowest host this extension
+// supports. A static import would stop the whole extension from loading there,
+// so older hosts load it and their added accounts get no usage report.
+const usageRegistry = await import("@oh-my-pi/pi-ai/usage/registry").catch(() => undefined);
+
+// Built-in usage fetchers only accept their own provider id, so a sub would get no
+// usage report. Probe as the base provider and relabel the report as the sub. The
+// host caches, invalidates and retains the relabeled report under the sub's id.
+function subUsageProvider(baseProvider: string, name: string): UsageProvider | undefined {
+	const base = usageRegistry?.defaultUsageProvider(baseProvider);
+	if (!base) return undefined;
+	const asSub = (report: UsageReport | null): UsageReport | null =>
+		report && {
+			...report,
+			provider: name,
+			limits: report.limits.map(limit => ({ ...limit, scope: { ...limit.scope, provider: name } })),
+		};
+	const { supports, parseRateLimitHeaders } = base;
+	return {
+		...base,
+		id: name,
+		fetchUsage: async (params, ctx) => asSub(await base.fetchUsage({ ...params, provider: baseProvider }, ctx)),
+		supports: supports && (params => supports({ ...params, provider: baseProvider })),
+		parseRateLimitHeaders: parseRateLimitHeaders && ((...args) => asSub(parseRateLimitHeaders(...args))),
+	};
+}
+
 function registerCodexSub(pi: ExtensionAPI, name: string, index: number, oauth: ProviderOAuth): void {
 	pi.registerProvider(name, {
 		baseUrl: CODEX_BASE_URL,
 		api: "openai-codex-responses",
 		oauth,
+		usage: subUsageProvider("openai-codex", name),
 		async fetchDynamicModels(accessToken) {
 			// OMP peeks at this provider's credential without refreshing it.
 			if (!accessToken) {
@@ -551,6 +579,7 @@ export function registerSub(pi: ExtensionAPI, entry: SubEntry): void {
 		api: transportApi ?? builtinModels[0]?.api,
 		streamSimple,
 		oauth: oauth && modifyModels ? { ...oauth, modifyModels } : oauth,
+		usage: subUsageProvider(entry.provider, name),
 		models,
 	});
 }
