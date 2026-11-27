@@ -1,7 +1,11 @@
 // Shared TUI select helpers.
 import type { ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
-import { DynamicBorder, keyHint } from "@oh-my-pi/pi-coding-agent";
-import { Container, Key, SelectList, Text, matchesKey, type SelectItem } from "@oh-my-pi/pi-tui";
+import * as agent from "@oh-my-pi/pi-coding-agent";
+import * as tuiComponents from "@oh-my-pi/pi-tui";
+import type { SelectItem } from "@oh-my-pi/pi-tui";
+
+const { DynamicBorder, keyHint } = agent;
+const { Container, Key, SelectList, Text, matchesKey } = tuiComponents;
 
 export function getWrappedSelectIndex(items: SelectItem[], value: string | undefined): number {
 	if (!value) return 0;
@@ -22,7 +26,8 @@ export async function showWrappedSelect(
 ): Promise<string | undefined> {
 	if (options.items.length === 0) return undefined;
 
-	if (!ctx.hasUI) {
+	// OMP 19's legacy bridge provides native dialogs but omits the TUI components.
+	if (!ctx.hasUI || !DynamicBorder || !keyHint || !Container || !Key || !SelectList || !Text || !matchesKey) {
 		const renderedItems = options.items.map((item) =>
 			item.description ? `${item.label} — ${item.description}` : item.label,
 		);
