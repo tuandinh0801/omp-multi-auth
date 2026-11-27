@@ -3,12 +3,12 @@
 // ========================================================================
 import { randomUUID } from "node:crypto";
 import type { ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { BorderedLoader } from "@oh-my-pi/pi-coding-agent";
+import * as agent from "@oh-my-pi/pi-coding-agent";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { getBaseProvider, subDisplayName, PROVIDER_TEMPLATES } from "./providers.ts";
 import { getAuthStorage, adaptAuthStorage, getModels, subProviderName, type AuthStorageEntry, type MultiAuthConfig, type QuotaAccount, type QuotaCheckResult, type QuotaStatusKind, type ProviderQuotaChecker, type AuthStorage } from "./core.ts";
 import { loadGlobalConfig, loadProjectConfig, parseEnvConfig, mergeConfigs, normalizeEntries } from "./config.ts";
-import { getWrappedSelectIndex, showWrappedSelect } from "./ui.ts";
+import { showWrappedSelect } from "./ui.ts";
 import type { SelectItem } from "@oh-my-pi/pi-tui";
 
 export const DEFAULT_CODEX_USAGE_BASE_URL = "https://chatgpt.com/backend-api";
@@ -426,7 +426,10 @@ export async function loadQuotaResults(
 	accounts: QuotaAccount[],
 	authStorage: AuthStorage,
 ): Promise<QuotaCheckResult[] | null> {
-	if (!ctx.hasUI) {
+	const { BorderedLoader } = agent;
+	const message = `Checking limits across ${accounts.length} ${accounts.length === 1 ? "account" : "accounts"}...`;
+	if (!ctx.hasUI || !BorderedLoader) {
+		if (ctx.hasUI) ctx.ui.notify(message, "info");
 		return runQuotaChecks(accounts, authStorage);
 	}
 
@@ -434,7 +437,7 @@ export async function loadQuotaResults(
 		const loader = new BorderedLoader(
 			tui,
 			theme,
-			`Checking limits across ${accounts.length} ${accounts.length === 1 ? "account" : "accounts"}...`,
+			message,
 		);
 		loader.onAbort = () => done(null);
 

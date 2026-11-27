@@ -40,6 +40,8 @@ omp install git:github.com/tuandinh0801/omp-multi-auth
 | `/multi-auth status` | Show account and authentication status |
 | `/multi-auth limits` | Check provider quota and usage |
 
+On OMP 19's legacy extension bridge, account menus use OMP's built-in selection dialog and quota checks show a progress notification.
+
 ### `/multi-auth-preset`
 
 | Command | Description |
